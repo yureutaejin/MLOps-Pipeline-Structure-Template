@@ -1,0 +1,239 @@
+{
+  "components": {
+    "comp-eval-model": {
+      "executorLabel": "exec-eval-model",
+      "inputDefinitions": {
+        "artifacts": {
+          "test_set": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          },
+          "xgb_model": {
+            "artifactType": {
+              "schemaTitle": "system.Model",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      },
+      "outputDefinitions": {
+        "artifacts": {
+          "smetrics": {
+            "artifactType": {
+              "schemaTitle": "system.Metrics",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      }
+    },
+    "comp-get-data": {
+      "executorLabel": "exec-get-data",
+      "outputDefinitions": {
+        "artifacts": {
+          "dataset_test": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          },
+          "dataset_train": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      }
+    },
+    "comp-train-xgb-model": {
+      "executorLabel": "exec-train-xgb-model",
+      "inputDefinitions": {
+        "artifacts": {
+          "dataset": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      },
+      "outputDefinitions": {
+        "artifacts": {
+          "model_artifact": {
+            "artifactType": {
+              "schemaTitle": "system.Model",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      }
+    }
+  },
+  "defaultPipelineRoot": "gs://storied-bearing-407115-bucket",
+  "deploymentSpec": {
+    "executors": {
+      "exec-eval-model": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "eval_model"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.4.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&  python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn' 'xgboost' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef eval_model(\n    test_set: Input[Dataset],\n    xgb_model: Input[Model],\n    smetrics: Output[Metrics]  # Only output for simple metrics\n):\n    from xgboost import XGBClassifier\n    import pandas as pd\n\n    # Load the test dataset\n    data = pd.read_csv(test_set.path)\n\n    # Load the XGBoost model\n    model = XGBClassifier()\n    model.load_model(xgb_model.path)\n\n    # Calculate the accuracy of the model\n    accuracy = model.score(data.drop(columns=[\"target\"]), data[\"target\"])\n\n    # Log the accuracy in the metrics\n    smetrics.log_metric(\"accuracy\", float(accuracy))\n\n    # Optionally, store accuracy in model's metadata (if needed)\n    xgb_model.metadata[\"test_accuracy\"] = float(accuracy)\n\n"
+          ],
+          "image": "python:3.7"
+        }
+      },
+      "exec-get-data": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "get_data"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.4.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&  python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef get_data(\n    dataset_train: Output[Dataset],\n    dataset_test: Output[Dataset]\n\n):\n\n    from sklearn import datasets\n    from sklearn.model_selection import train_test_split as tts\n    import pandas as pd\n    # import some data to play with\n\n    data_raw = datasets.load_breast_cancer()\n    data = pd.DataFrame(data_raw.data, columns=data_raw.feature_names)\n    data[\"target\"] = data_raw.target\n\n    train, test = tts(data, test_size=0.3)\n\n    train.to_csv(dataset_train.path)\n    test.to_csv(dataset_test.path)\n\n"
+          ],
+          "image": "python:3.7"
+        }
+      },
+      "exec-train-xgb-model": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "train_xgb_model"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.4.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&  python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn' 'xgboost' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef train_xgb_model(\n    dataset: Input[Dataset],\n    model_artifact: Output[Model]\n):\n\n    from xgboost import XGBClassifier\n    import pandas as pd\n\n    data = pd.read_csv(dataset.path)\n\n    model = XGBClassifier(\n        objective=\"binary:logistic\"\n    )\n    model.fit(\n        data.drop(columns=[\"target\"]),\n        data.target,\n    )\n\n    score = model.score(\n        data.drop(columns=[\"target\"]),\n        data.target,\n    )\n\n    model_artifact.metadata[\"train_score\"] = float(score)\n    model_artifact.metadata[\"framework\"] = \"XGBoost\"\n\n    model.save_model(model_artifact.path)\n\n"
+          ],
+          "image": "python:3.7"
+        }
+      }
+    }
+  },
+  "pipelineInfo": {
+    "name": "pipeline-xgboost-breast-cancer-handson"
+  },
+  "root": {
+    "dag": {
+      "outputs": {
+        "artifacts": {
+          "eval-model-smetrics": {
+            "artifactSelectors": [
+              {
+                "outputArtifactKey": "smetrics",
+                "producerSubtask": "eval-model"
+              }
+            ]
+          }
+        }
+      },
+      "tasks": {
+        "eval-model": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-eval-model"
+          },
+          "dependentTasks": [
+            "get-data",
+            "train-xgb-model"
+          ],
+          "inputs": {
+            "artifacts": {
+              "test_set": {
+                "taskOutputArtifact": {
+                  "outputArtifactKey": "dataset_test",
+                  "producerTask": "get-data"
+                }
+              },
+              "xgb_model": {
+                "taskOutputArtifact": {
+                  "outputArtifactKey": "model_artifact",
+                  "producerTask": "train-xgb-model"
+                }
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "eval-model"
+          }
+        },
+        "get-data": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-get-data"
+          },
+          "taskInfo": {
+            "name": "get-data"
+          }
+        },
+        "train-xgb-model": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-train-xgb-model"
+          },
+          "dependentTasks": [
+            "get-data"
+          ],
+          "inputs": {
+            "artifacts": {
+              "dataset": {
+                "taskOutputArtifact": {
+                  "outputArtifactKey": "dataset_train",
+                  "producerTask": "get-data"
+                }
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "train-xgb-model"
+          }
+        }
+      }
+    },
+    "outputDefinitions": {
+      "artifacts": {
+        "eval-model-smetrics": {
+          "artifactType": {
+            "schemaTitle": "system.Metrics",
+            "schemaVersion": "0.0.1"
+          }
+        }
+      }
+    }
+  },
+  "schemaVersion": "2.1.0",
+  "sdkVersion": "kfp-2.4.0"
+}
